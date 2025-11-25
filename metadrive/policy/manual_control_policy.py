@@ -67,7 +67,7 @@ class ManualControlPolicy(EnvInputPolicy):
 
     def act(self, agent_id):
 
-        self.controller.process_others(takeover_callback=self.toggle_takeover)
+        self.controller.process_others(current_event=self.engine.current_event, takeover_callback=self.toggle_takeover)
 
         try:
             if self.engine.current_track_agent.expert_takeover and self.enable_expert:

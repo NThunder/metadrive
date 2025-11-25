@@ -496,7 +496,6 @@ class BaseEnv(gym.Env):
         :param mode: start_top_down rendering candidate parameter is ["top_down", "topdown", "bev", "birdview"]
         :return: None or top_down image
         """
-
         if mode in ["top_down", "topdown", "bev", "birdview"]:
             ret = self._render_topdown(text=text, *args, **kwargs)
             return ret

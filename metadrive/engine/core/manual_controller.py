@@ -27,7 +27,7 @@ class Controller:
     def process_input(self, vehicle):
         raise NotImplementedError
 
-    def process_others(self, *args, **kwargs):
+    def process_others(self, current_event, *args, **kwargs):
         pass
 
 
@@ -124,11 +124,11 @@ class KeyboardController(Controller):
 
         return np.array([self.steering, self.throttle_brake], dtype=np.float64)
 
-    def process_others(self, takeover_callback=None):
+    def process_others(self, current_event, takeover_callback=None):
         """This function allows the outer loop to call callback if some signal is received by the controller."""
         if (takeover_callback is None) or (not self.pygame_control) or (not pygame.get_init()):
             return
-        for event in pygame.event.get():
+        for event in current_event:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_t:
                 # Here we allow user to press T for takeover callback.
                 takeover_callback()

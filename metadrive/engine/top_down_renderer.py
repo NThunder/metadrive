@@ -23,12 +23,14 @@ color_white = (255, 255, 255)
 
 def draw_top_down_map_native(
     map,
+    focus_point=None,
+    original_background=None,
     semantic_map=True,
     draw_center_line=False,
     return_surface=False,
     film_size=(2000, 2000),
     scaling=None,
-    semantic_broken_line=True
+    semantic_broken_line=True,
 ) -> Optional[Union[np.ndarray, pygame.Surface]]:
     """
     Draw the top_down map on a pygame surface
@@ -44,23 +46,35 @@ def draw_top_down_map_native(
     Returns: cv2.image or pygame.Surface
 
     """
-    surface = WorldSurface(film_size, 0, pygame.Surface(film_size))
-    if map is None:
-        surface.move_display_window_to([0, 0])
-        surface.fill([230, 230, 230])
-        return surface if return_surface else WorldSurface.to_cv2_image(surface)
+    if original_background is not None:
+        # Загружаем ваше изображение
+        surface = WorldSurface(film_size, scaling, pygame.Surface(film_size))
 
+        # 2. Загружаем и масштабируем изображение
+        bg_img = original_background
+        # bg_img = pygame.transform.smoothscale(bg_img, film_size)
+
+        # 3. Копируем изображение НА WorldSurface
+        surface.blit(bg_img, (0, 0))
+    else:
+        surface = WorldSurface(film_size, 0, pygame.Surface(film_size))
+    # pygame.image.save(surface, "perfect_background.png")
     b_box = map.road_network.get_bounding_box()
+    print("b_box:   ", b_box)
     x_len = b_box[1] - b_box[0]
     y_len = b_box[3] - b_box[2]
     max_len = max(x_len, y_len)
     # scaling and center can be easily found by bounding box
     if scaling is None:
         scaling = (film_size[1] / max_len - 0.1)
-    else:
-        scaling = min(scaling, (film_size[1] / max_len - 0.1))
+    # else:
+    #     scaling = min(scaling, (film_size[1] / max_len - 0.1))
     surface.scaling = scaling
-    centering_pos = ((b_box[0] + b_box[1]) / 2, (b_box[2] + b_box[3]) / 2)
+    if focus_point is not None:
+        centering_pos = focus_point
+    else:
+        b_box = map.road_network.get_bounding_box()
+        centering_pos = ((b_box[0] + b_box[1]) / 2, (b_box[2] + b_box[3]) / 2)
     surface.move_display_window_to(centering_pos)
     line_sample_interval = 2
 
@@ -174,6 +188,37 @@ def draw_top_down_trajectory(
 
 
 class TopDownRenderer:
+
+            
+    def _apply_background_transform(self):
+        if self.original_background is None:
+            self._background_canvas.fill((230, 230, 230))
+            return
+
+        # 1. Масштабирование
+        if self.background_scaling != 1.0:
+            w, h = self.original_background.get_size()
+            new_size = (int(w * self.background_scaling), int(h * self.background_scaling))
+            scaled = pygame.transform.smoothscale(self.original_background, new_size)
+        else:
+            scaled = self.original_background
+
+        # 2. Поворот
+        if self.background_rotation != 0:
+            rotated = pygame.transform.rotate(scaled, self.background_rotation)
+        else:
+            rotated = scaled
+
+        # 3. Копируем на _background_canvas с учётом смещения
+        
+        self._background_canvas.fill((255, 255, 255))  # очистка
+        self._background_canvas.blit(
+            rotated,
+            self.background_offset  # (dx, dy) в пикселях
+        )
+        self._background_canvas.scaling = self.graph_scaling
+        self.scaling = self._background_canvas.scaling
+        
     def __init__(
         self,
         film_size=(2000, 2000),  # draw map in size = film_size/scaling. By default, it is set to 400m
@@ -193,6 +238,11 @@ class TopDownRenderer:
         window=True,
         screen_record=False,
         center_on_map=False,
+        background_image_path="/home/gbuhtuev/airi/pdd/sdc/pdd-bench/merged_yandex_map_z19.png",
+        background_offset=(1860, -150),      # смещение фона в пикселях
+        background_scaling=0.87,        # масштаб фона (1.0 = оригинальный)
+        graph_scaling=5.0,        # масштаб фона (1.0 = оригинальный)
+        background_rotation=-1.0,       # поворот в градусах
     ):
         """
         Launch a top-down renderer for current episode. Usually, it is launched by env.render(mode="topdown") and will
@@ -242,8 +292,30 @@ class TopDownRenderer:
         """
         # doc-end
         # LQY: do not delete the above line !!!!!
+        self.background_offset = background_offset
+        self.background_scaling = background_scaling
+        self.graph_scaling = graph_scaling
+        self.background_rotation = background_rotation
+        self.pred_background_offset = background_offset
+        self.pred_background_scaling = background_scaling
+        self.pred_graph_scaling = 1
+        self.pred_background_rotation = background_rotation
+        self.engine.current_event = []
+        self.sign_icon_raw = {}
+        self.sign_icon_surfaces = {}  # кэш сконвертированных
+        self._current_events = []
 
-        # Setup some useful flags
+        sign_icon_paths = {
+            "StopSign": "/home/gbuhtuev/airi/pdd/sdc/pdd-bench/traffic_signs/STOP_sign_cyrillic.svg.png",
+            # ...
+        }
+
+        for cls_name, path in sign_icon_paths.items():
+            try:
+                self.sign_icon_raw[cls_name] = pygame.image.load(path)  # ← без convert!
+            except Exception as e:
+                print(f"Failed to load icon for {cls_name}: {e}")
+                
         self.logger = get_logger()
         if num_stack < 1:
             self.logger.warning("num_stack should be greater than 0. Current value: {}. Set to 1".format(num_stack))
@@ -288,8 +360,19 @@ class TopDownRenderer:
         # Setup the canvas
         # (1) background is the underlying layer that draws map.
         # It is fixed and will never change unless the map changes.
+
+        self.original_background = None
+        if background_image_path is not None:
+            try:
+                self.original_background = pygame.image.load(background_image_path)
+                # Не масштабируем сразу — будем делать это динамически
+            except Exception as e:
+                print(f"Failed to load background: {e}")
+
         self._background_canvas = draw_top_down_map_native(
             self.map,
+            focus_point=None,
+            original_background=self.original_background,
             draw_center_line=draw_center_line,
             scaling=self.scaling,
             semantic_map=self.semantic_map,
@@ -313,7 +396,7 @@ class TopDownRenderer:
         self._screen_canvas = pygame.Surface(self._screen_size
                                              ) if self.no_window else pygame.display.set_mode(self._screen_size)
         self._screen_canvas.set_alpha(None)
-        self._screen_canvas.fill(color_white)
+        # self._screen_canvas.fill(color_white)
 
         # Draw
         self.blit()
@@ -326,6 +409,49 @@ class TopDownRenderer:
         return self._screen_canvas
 
     def refresh(self):
+        if self.pred_background_offset != self.background_offset or \
+            self.pred_background_scaling != self.background_scaling or\
+            self.pred_graph_scaling != self.graph_scaling or\
+            self.pred_background_rotation != self.background_rotation:
+            
+                
+            self._apply_background_transform()      # ← обновляем фон с трансформациями
+            self.pred_background_offset = self.background_offset
+            self.pred_background_scaling = self.background_scaling
+            self.pred_graph_scaling = self.graph_scaling
+            self.pred_background_rotation = self.background_rotation
+            if self.semantic_map:
+                line_sample_interval = 2
+                draw_center_line = False
+                all_lanes = self.map.get_map_features(line_sample_interval)
+
+                for obj in all_lanes.values():
+                    if MetaDriveType.is_lane(obj["type"]) and not draw_center_line:
+                        pygame.draw.polygon(
+                            self._background_canvas, TopDownSemanticColor.get_color(obj["type"]),
+                            [self._background_canvas.pos2pix(p[0], p[1]) for p in obj["polygon"]]
+                        )
+
+                    elif (MetaDriveType.is_road_line(obj["type"]) or MetaDriveType.is_road_boundary_line(obj["type"])
+                        or (MetaDriveType.is_lane(obj["type"]) and draw_center_line)):
+                        if self.semantic_broken_line and MetaDriveType.is_broken_line(obj["type"]):
+                            points_to_skip = math.floor(PGDrivableAreaProperty.STRIPE_LENGTH * 2 / line_sample_interval) * 2
+                        else:
+                            points_to_skip = 1
+                        for index in range(0, len(obj["polyline"]) - 1, points_to_skip):
+                            color = [255, 0, 0] if MetaDriveType.is_lane(obj["type"]) and index==0\
+                                else TopDownSemanticColor.get_color(obj["type"])
+                            if index + 1 < len(obj["polyline"]):
+                                s_p = obj["polyline"][index]
+                                e_p = obj["polyline"][index + 1]
+                                pygame.draw.line(
+                                    self._background_canvas,
+                                    color,
+                                    self._background_canvas.vec2pix([s_p[0], s_p[1]]),
+                                    self._background_canvas.vec2pix([e_p[0], e_p[1]]),
+                                    # max(surface.pix(LaneGraphics.STRIPE_WIDTH),
+                                    self._background_canvas.pix(PGDrivableAreaProperty.LANE_LINE_WIDTH) * 2
+                                )
         self._frame_canvas.blit(self._background_canvas, (0, 0))
         self.screen_canvas.fill(color_white)
 
@@ -447,7 +573,6 @@ class TopDownRenderer:
         """
         if len(self.history_objects) == 0:
             return
-
         for i, objects in enumerate(self.history_objects):
             if i == len(self.history_objects) - 1:
                 continue
@@ -524,6 +649,21 @@ class TopDownRenderer:
                     radius=5
                 )
                 self._deads.append(v)
+        if not self.sign_icon_surfaces:
+            # Конвертируем один раз, когда уже есть видеоконтекст
+            for name, img in self.sign_icon_raw.items():
+                scaled = pygame.transform.smoothscale(img, (24, 24))
+                self.sign_icon_surfaces[name] = scaled.convert_alpha() 
+            
+        if hasattr(self.engine, 'traffic_sign_manager'):
+            sign_mgr = self.engine.traffic_sign_manager
+            for sign in sign_mgr.signs:
+                sign_type = type(sign).__name__
+                icon = self.sign_icon_surfaces.get(sign_type)
+                if icon is not None and hasattr(sign, 'position'):
+                    pixel_x, pixel_y = self._frame_canvas.pos2pix(sign.position[0], sign.position[1])
+                    rect = icon.get_rect(center=(pixel_x, pixel_y))
+                    self._frame_canvas.blit(icon, rect)
 
         v = self.current_track_agent
         canvas = self._frame_canvas
@@ -534,8 +674,9 @@ class TopDownRenderer:
                     frame_canvas_size = self._frame_canvas.get_size()
                     position = (frame_canvas_size[0] / 2, frame_canvas_size[1] / 2)
                 else:
-                    cam_pos = (self.position or v.position)
+                    cam_pos = v.position
                     position = self._frame_canvas.pos2pix(*cam_pos)
+                    # print("cam_pos", cam_pos)
             else:
                 position = (field[0] / 2, field[1] / 2)
             off = (position[0] - field[0] / 2, position[1] - field[1] / 2)
@@ -546,7 +687,7 @@ class TopDownRenderer:
                 position[0] - self.canvas_rotate.get_size()[0] / 2, position[1] - self.canvas_rotate.get_size()[1] / 2,
                 self.canvas_rotate.get_size()[0], self.canvas_rotate.get_size()[1]
             )
-            self.canvas_rotate.fill(color_white)
+            # self.canvas_rotate.fill(color_white)
             self.canvas_rotate.blit(source=canvas, dest=(0, 0), area=area)
 
             rotation = -np.rad2deg(v.heading_theta) + 90
@@ -563,6 +704,7 @@ class TopDownRenderer:
                     size[1]  # Height
                 )
             )
+            
 
         if self.show_agent_name:
             raise ValueError("This function is broken")
@@ -590,14 +732,45 @@ class TopDownRenderer:
         """
         Handle pygame events for moving and zooming in the displayed area.
         """
-        if self.no_window:
+        if not pygame.get_init() or self.no_window:
             return
-        events = pygame.event.get()
-        for event in events:
+        for event in  self.engine.current_event:
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    import sys
-                    sys.exit()
+                # Управление масштабом фона
+                if event.key == pygame.K_EQUALS:
+                    self.background_scaling = self.background_scaling * 1.05
+                    print(f"BG scaling: {self.background_scaling:.2f}")
+                elif event.key == pygame.K_MINUS:
+                    self.background_scaling = self.background_scaling / 1.05
+                    print(f"BG scaling: {self.background_scaling:.2f}")
+                    
+                if event.key == pygame.K_q:
+                    self.graph_scaling = self.graph_scaling * 1.05
+                    print(f"G scaling: {self.graph_scaling:.2f}")
+                elif event.key == pygame.K_e:
+                    self.graph_scaling = self.graph_scaling / 1.05
+                    print(f"G scaling: {self.graph_scaling:.2f}")
+
+                # Управление поворотом
+                elif event.key == pygame.K_n:
+                    self.background_rotation += 1
+                    print(f"BG rotation: {self.background_rotation:.1f}°")
+                elif event.key == pygame.K_m:
+                    self.background_rotation -= 1
+                    print(f"BG rotation: {self.background_rotation:.1f}°")
+
+                # Управление смещением
+                elif event.key == pygame.K_LEFT:
+                    self.background_offset = (self.background_offset[0] - 10, self.background_offset[1])
+                elif event.key == pygame.K_RIGHT:
+                    self.background_offset = (self.background_offset[0] + 10, self.background_offset[1])
+                elif event.key == pygame.K_UP:
+                    self.background_offset = (self.background_offset[0], self.background_offset[1] - 10)
+                elif event.key == pygame.K_DOWN:
+                    self.background_offset = (self.background_offset[0], self.background_offset[1] + 10)
+
+                print(f"BG offset: {self.background_offset}")
+                
 
     @property
     def engine(self):

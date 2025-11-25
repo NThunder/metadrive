@@ -69,12 +69,12 @@ METADRIVE_DEFAULT_CONFIG = dict(
 
     # ===== Reward Scheme =====
     # See: https://github.com/metadriverse/metadrive/issues/283
-    success_reward=10.0,
-    out_of_road_penalty=5.0,
-    crash_vehicle_penalty=5.0,
-    crash_object_penalty=5.0,
+    success_reward=3.0,
+    out_of_road_penalty=10.0,
+    crash_vehicle_penalty=10.0,
+    crash_object_penalty=10.0,
     crash_sidewalk_penalty=0.0,
-    driving_reward=1.0,
+    driving_reward=0.1,
     speed_reward=0.1,
     use_lateral_reward=False,
 
