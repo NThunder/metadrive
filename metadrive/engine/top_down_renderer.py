@@ -452,6 +452,13 @@ class TopDownRenderer:
                                     # max(surface.pix(LaneGraphics.STRIPE_WIDTH),
                                     self._background_canvas.pix(PGDrivableAreaProperty.LANE_LINE_WIDTH) * 2
                                 )
+                else:
+                    for _from in self.map.road_network.graph.keys():
+                        decoration = True if _from == Decoration.start else False
+                        for _to in self.map.road_network.graph[_from].keys():
+                            for l in self.map.road_network.graph[_from][_to]:
+                                two_side = True if l is self.map.road_network.graph[_from][_to][-1] or decoration else False
+                                LaneGraphics.display(l, self._background_canvas, two_side, use_line_color=True)
         self._frame_canvas.blit(self._background_canvas, (0, 0))
         self.screen_canvas.fill(color_white)
 
